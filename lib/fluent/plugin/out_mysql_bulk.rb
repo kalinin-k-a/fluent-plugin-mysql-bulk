@@ -11,6 +11,8 @@ module Fluent
 
     config_param :column_names, :string
     config_param :key_names, :string, default: nil
+    config_param :rows_per_query, :string, default: 5000
+    
     config_param :table, :string
 
     config_param :on_duplicate_key_update, :bool, default: false
@@ -34,18 +36,24 @@ module Fluent
         if @on_duplicate_update_keys.nil?
           fail Fluent::ConfigError, 'on_duplicate_key_update = true , on_duplicate_update_keys nil!'
         end
-        @on_duplicate_update_keys = @on_duplicate_update_keys.split(',')
+        @on_duplicate_update_keys = @on_duplicate_update_keys.split(/,\s*/)
 
         @on_duplicate_key_update_sql = ' ON DUPLICATE KEY UPDATE '
         updates = []
         @on_duplicate_update_keys.each do |update_column|
-          updates.push(" #{update_column} = VALUES(#{update_column})")
+          update_column =~ /^(\+\=)?(.+)$/
+          update_column = Regexp.last_match[2]
+          update_expression = ''
+          if Regexp.last_match[1] == '+='
+            update_expression = "#{update_column} + "
+          end
+          updates.push(" #{update_column} = #{update_expression} VALUES(#{update_column})")
         end
         @on_duplicate_key_update_sql += updates.join(',')
       end
 
-      @column_names = @column_names.split(',')
-      @key_names = @key_names.nil? ? @column_names : @key_names.split(',')
+      @column_names = @column_names.split(/,\s*/)
+      @key_names = @key_names.nil? ? @column_names : @key_names.split(/,\s*/)
     end
 
     def start
@@ -87,15 +95,36 @@ module Fluent
       @handler = client
       values_templates = []
       values = []
+      
+      rows = 0
+     
       chunk.msgpack_each do |tag, time, data|
         values_templates << "(#{ @column_names.map { |key| '?' }.join(',') })"
         values.concat(data)
-      end
-      sql = "INSERT INTO #{@table} (#{@column_names.join(',')}) VALUES #{values_templates.join(',')}"
-      sql += @on_duplicate_key_update_sql if @on_duplicate_key_update
+        
+        rows = rows + 1
+        if rows == @rows_per_query
+            sql = "INSERT INTO #{@table} (#{@column_names.join(',')}) VALUES #{values_templates.join(',')}"
+            sql += @on_duplicate_key_update_sql if @on_duplicate_key_update
 
-      $log.info "bulk insert values size => #{values_templates.size}"
-      @handler.xquery(sql, values)
+            @handler.xquery(sql, values)
+
+            rows = 0
+            values = []
+            values_templates = []
+        end
+        
+      end
+      
+      log.warn @rows_per_query
+      
+
+      if rows != 0
+          sql = "INSERT INTO #{@table} (#{@column_names.join(',')}) VALUES #{values_templates.join(',')}"
+          sql += @on_duplicate_key_update_sql if @on_duplicate_key_update
+          @handler.xquery(sql, values)
+      end
+  
       @handler.close
     end
 
