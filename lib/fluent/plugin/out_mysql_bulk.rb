@@ -116,8 +116,6 @@ module Fluent
         
       end
       
-      log.warn @rows_per_query
-      
 
       if rows != 0
           sql = "INSERT INTO #{@table} (#{@column_names.join(',')}) VALUES #{values_templates.join(',')}"
